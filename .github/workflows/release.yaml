@@ -1,0 +1,102 @@
+name: Create Release
+
+env:
+  PACKAGE-FILENAME: 'bcgov-citz-imb-sso-react'
+  CHANGELOG: '' # Leave empty.
+
+on:
+  # Manually triggered
+  workflow_dispatch:
+    inputs:
+      releaseTitle:
+        description: 'The title of the release'
+        required: true
+
+jobs:
+  check_version_change:
+    runs-on: ubuntu-latest
+    steps:
+      # Checkout code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch all history for all tags and branches
+      
+      # Fetch all tags
+      - name: Fetch tags
+        run: git fetch --tags
+
+      # Get latest tag name
+      - name: Get latest tag
+        id: latest_tag
+        run: echo "::set-output name=TAG::$(git describe --tags `git rev-list --tags --max-count=1`)"
+
+      # Get version from package.json
+      - name: Get package version
+        id: package_version
+        run: echo "::set-output name=VERSION::$(node -p "require('./package.json').version")"
+
+      # Compare versions and fail if they match
+      - name: Compare versions and fail if necessary
+        run: |
+          if [ "v${{ steps.package_version.outputs.VERSION }}" == "${{ steps.latest_tag.outputs.TAG }}" ]; then
+            echo "Version in package.json (${{ steps.package_version.outputs.VERSION }}) matches the latest tag (${{ steps.latest_tag.outputs.TAG }})."
+            echo "You must update the version with 'npm run bump' before a release can be made."
+            exit 1
+          fi
+          
+  create_release:
+    runs-on: ubuntu-latest
+    steps:
+      # Checkout code
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Fetch all history for all tags and branches
+
+      # Create changelog
+      - name: Create changelog from commits
+        id: changelog
+        run: |
+          changelog=$(git log $(git describe --tags --abbrev=0)..HEAD --pretty=format:'%h - %s')
+          echo "CHANGELOG<<EOF" >> $GITHUB_ENV
+          echo "$changelog" >> $GITHUB_ENV
+          echo "EOF" >> $GITHUB_ENV
+
+      # Package code
+      - name: Run npm pack
+        run: npm run pack
+
+      # Get new version number
+      - name: Get the version from package.json
+        id: package_version
+        run: echo "::set-output name=VERSION::$(node -p "require('./package.json').version")"
+
+      # Publish package to NPM
+      - name: Publish to npm
+        uses: JS-DevTools/npm-publish@v3
+        with:
+          token: ${{ secrets.NPM_TOKEN }}
+          access: public
+
+      # Create new release in GitHub
+      - name: Create GitHub Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.package_version.outputs.VERSION }}
+          name: ${{ github.event.inputs.releaseTitle }}
+          body: ${{ env.CHANGELOG }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Upload packaged code
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./releases/${{ env.PACKAGE-FILENAME }}-${{ steps.package_version.outputs.VERSION }}.tgz
+          asset_name: ${{ env.PACKAGE-FILENAME }}-${{ steps.package_version.outputs.VERSION }}.tgz
+          asset_content_type: application/gzip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
